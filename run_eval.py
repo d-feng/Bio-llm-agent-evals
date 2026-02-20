@@ -16,8 +16,10 @@ Usage:
     # Compare agents
     python run_eval.py --agent basic --module "SNP location"
 
-    # Save results
+    # Save results / reports
     python run_eval.py --benchmark --output results.csv
+    python run_eval.py --benchmark --llm-judge --report report.md
+    python run_eval.py --benchmark --llm-judge --report-word report.docx
 
 Available modules:
     Gene alias, SNP location, Gene location, Gene disease,
@@ -49,6 +51,10 @@ def parse_args():
                         help="Save results to CSV (e.g. results.csv)")
     parser.add_argument("--llm-judge", action="store_true",
                         help="Use LLM as judge fallback when exact match fails")
+    parser.add_argument("--report", type=str, default=None,
+                        help="Save Markdown report to file (e.g. report.md)")
+    parser.add_argument("--report-word", type=str, default=None,
+                        help="Save Word report to file (e.g. report.docx)")
     return parser.parse_args()
 
 
@@ -91,3 +97,13 @@ if __name__ == "__main__":
     if args.output:
         results_df.to_csv(args.output, index=False)
         print(f"\nResults saved to {args.output}")
+
+    if args.report:
+        from evals.report import generate_markdown_report
+        generate_markdown_report(results_df, agent_type=args.agent,
+                                 use_llm_judge=use_llm_judge, output_path=args.report)
+
+    if args.report_word:
+        from evals.report import generate_word_report
+        generate_word_report(results_df, agent_type=args.agent,
+                             use_llm_judge=use_llm_judge, output_path=args.report_word)
