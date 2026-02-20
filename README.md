@@ -1,4 +1,4 @@
-# Bio LLM Evals
+# Bio LLM Agent Evals
 
 A curated collection of benchmarks and evaluation frameworks for testing LLM and autonomous AI agent performance in drug discovery and bioinformatics.
 
