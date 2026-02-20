@@ -8,9 +8,14 @@ GeneTuring repo: https://github.com/Winnie09/GeneTuring
 Covers 8 of the 16 GeneTuring modules in the built-in mock dataset.
 """
 
+import os
 import json
+import re
 import pandas as pd
+from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
+
+load_dotenv()
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +38,80 @@ def jaccard_score(prediction: str, gold: str) -> float:
     intersection = pred_tokens & gold_tokens
     union = pred_tokens | gold_tokens
     return len(intersection) / len(union)
+
+
+def llm_judge(question: str, prediction: str, gold: str, judge_llm=None) -> dict:
+    """
+    Use an LLM as a judge to score semantic correctness when exact match fails.
+
+    Returns a dict with:
+        correct  : bool   — judge verdict
+        score    : float  — 0.0 or 1.0
+        reason   : str    — judge's one-line explanation
+    """
+    if judge_llm is None:
+        from langchain_anthropic import ChatAnthropic
+        judge_llm = ChatAnthropic(
+            model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            max_tokens=256,
+        )
+
+    prompt = f"""You are an expert biomedical evaluator. Judge whether the agent's answer is correct.
+
+Question      : {question}
+Gold standard : {gold}
+Agent answer  : {prediction}
+
+Rules:
+- Numeric answers are correct if they are within 10% of the gold standard value.
+- Gene symbols are correct only if the official HGNC symbol matches exactly (case-insensitive).
+- Partial or approximate answers that convey the correct fact count as correct.
+- Answers that are clearly wrong or contradict the gold standard are incorrect.
+
+Respond in this exact format:
+VERDICT: CORRECT or INCORRECT
+REASON: <one sentence>"""
+
+    response = judge_llm.invoke([HumanMessage(content=prompt)])
+    text = response.content.strip()
+
+    verdict_match = re.search(r"VERDICT:\s*(CORRECT|INCORRECT)", text, re.IGNORECASE)
+    reason_match  = re.search(r"REASON:\s*(.+)", text, re.IGNORECASE)
+
+    correct = verdict_match.group(1).upper() == "CORRECT" if verdict_match else False
+    reason  = reason_match.group(1).strip() if reason_match else text[:120]
+
+    return {"correct": correct, "score": 1.0 if correct else 0.0, "reason": reason}
+
+
+def score_answer(question: str, prediction: str, gold: str,
+                 use_llm_judge: bool = False, judge_llm=None) -> dict:
+    """
+    Primary scoring function. Tries exact match first; falls back to LLM judge
+    if use_llm_judge=True and exact match fails.
+
+    Returns:
+        ExactMatch     : bool
+        LLMJudge       : bool or None
+        LLMJudgeReason : str or None
+        FinalScore     : bool  — the authoritative pass/fail used in reporting
+    """
+    em = exact_match(prediction, gold)
+    result = {
+        "ExactMatch":      em,
+        "LLMJudge":        None,
+        "LLMJudgeReason":  None,
+        "FinalScore":      em,
+    }
+
+    if not em and use_llm_judge:
+        judgement = llm_judge(question, prediction, gold, judge_llm)
+        result["LLMJudge"]       = judgement["correct"]
+        result["LLMJudgeReason"] = judgement["reason"]
+        result["FinalScore"]     = judgement["correct"]
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -129,14 +208,17 @@ def load_geneturing_tasks(
 # Single-module evaluation loop
 # ---------------------------------------------------------------------------
 
-def run_eval(app, module_name: str = "Gene alias", sample_size: int = 5, path: str = None) -> pd.DataFrame:
+def run_eval(app, module_name: str = "Gene alias", sample_size: int = 5,
+             path: str = None, use_llm_judge: bool = False, judge_llm=None) -> pd.DataFrame:
     """
     Run the compiled LangGraph agent against GeneTuring tasks and return a scored DataFrame.
     Use module_name='all' to run across all built-in modules.
+    Set use_llm_judge=True to enable LLM-as-judge fallback when exact match fails.
     """
     tasks = load_geneturing_tasks(path=path, module_name=module_name, sample_size=sample_size)
     label = "ALL modules" if module_name == "all" else f"[{module_name}]"
-    print(f"Evaluating agent on {len(tasks)} GeneTuring {label} tasks...\n")
+    judge_label = " + LLM judge" if use_llm_judge else ""
+    print(f"Evaluating agent on {len(tasks)} GeneTuring {label} tasks{judge_label}...\n")
 
     results = []
     for task in tasks:
@@ -146,17 +228,22 @@ def run_eval(app, module_name: str = "Gene alias", sample_size: int = 5, path: s
         output_state = app.invoke({"messages": [HumanMessage(content=question)]})
         agent_answer = output_state["messages"][-1].content
 
+        scores = score_answer(question, agent_answer, gold_standard, use_llm_judge, judge_llm)
+
         results.append({
-            "Module":       task["module"],
-            "Question":     question,
-            "Expected":     gold_standard,
-            "Agent_Output": agent_answer,
-            "ExactMatch":   exact_match(agent_answer, gold_standard),
-            "Jaccard":      round(jaccard_score(agent_answer, gold_standard), 3),
+            "Module":          task["module"],
+            "Question":        question,
+            "Expected":        gold_standard,
+            "Agent_Output":    agent_answer,
+            "ExactMatch":      scores["ExactMatch"],
+            "LLMJudge":        scores["LLMJudge"],
+            "LLMJudgeReason":  scores["LLMJudgeReason"],
+            "FinalScore":      scores["FinalScore"],
+            "Jaccard":         round(jaccard_score(agent_answer, gold_standard), 3),
         })
 
     df = pd.DataFrame(results)
-    _print_summary(df, module_name)
+    _print_summary(df, module_name, use_llm_judge)
     return df
 
 
@@ -164,7 +251,8 @@ def run_eval(app, module_name: str = "Gene alias", sample_size: int = 5, path: s
 # All-modules benchmark
 # ---------------------------------------------------------------------------
 
-def run_benchmark(app, sample_per_module: int = 3, path: str = None) -> pd.DataFrame:
+def run_benchmark(app, sample_per_module: int = 3, path: str = None,
+                  use_llm_judge: bool = False, judge_llm=None) -> pd.DataFrame:
     """
     Run the agent across all available GeneTuring modules and print a
     per-module accuracy table plus an overall score.
@@ -180,15 +268,20 @@ def run_benchmark(app, sample_per_module: int = 3, path: str = None) -> pd.DataF
         for task in subset:
             output_state = app.invoke({"messages": [HumanMessage(content=task["question"])]})
             agent_answer = output_state["messages"][-1].content
+            scores = score_answer(task["question"], agent_answer, task["gold_standard"],
+                                  use_llm_judge, judge_llm)
             all_results.append({
-                "Module":       module,
-                "Question":     task["question"],
-                "Expected":     task["gold_standard"],
-                "Agent_Output": agent_answer,
-                "ExactMatch":   exact_match(agent_answer, task["gold_standard"]),
-                "Jaccard":      round(jaccard_score(agent_answer, task["gold_standard"]), 3),
+                "Module":         module,
+                "Question":       task["question"],
+                "Expected":       task["gold_standard"],
+                "Agent_Output":   agent_answer,
+                "ExactMatch":     scores["ExactMatch"],
+                "LLMJudge":       scores["LLMJudge"],
+                "LLMJudgeReason": scores["LLMJudgeReason"],
+                "FinalScore":     scores["FinalScore"],
+                "Jaccard":        round(jaccard_score(agent_answer, task["gold_standard"]), 3),
             })
-            status = "PASS" if all_results[-1]["ExactMatch"] else "FAIL"
+            status = "PASS" if all_results[-1]["FinalScore"] else "FAIL"
             print(f"  [{status}] {task['question'][:60]:<60} -> {task['gold_standard']}")
 
     df = pd.DataFrame(all_results)
@@ -197,20 +290,30 @@ def run_benchmark(app, sample_per_module: int = 3, path: str = None) -> pd.DataF
     print("-" * 60)
 
     summary = df.groupby("Module").agg(
-        Tasks=("ExactMatch", "count"),
+        Tasks=("FinalScore", "count"),
         ExactMatch=("ExactMatch", "mean"),
+        FinalScore=("FinalScore", "mean"),
         AvgJaccard=("Jaccard", "mean"),
     ).round(3)
     summary["ExactMatch"] = summary["ExactMatch"].map(lambda x: f"{x:.1%}")
+    summary["FinalScore"] = summary["FinalScore"].map(lambda x: f"{x:.1%}")
     print(summary.to_string())
-    print(f"\nOverall Exact Match: {df['ExactMatch'].mean():.1%}  ({df['ExactMatch'].sum():.0f}/{len(df)} correct)")
+    print(f"\nOverall Exact Match : {df['ExactMatch'].mean():.1%}  ({df['ExactMatch'].sum():.0f}/{len(df)} correct)")
+    if use_llm_judge:
+        print(f"Overall Final Score : {df['FinalScore'].mean():.1%}  ({df['FinalScore'].sum():.0f}/{len(df)} correct)  [with LLM judge]")
 
     return df
 
 
-def _print_summary(df: pd.DataFrame, module_name: str):
-    print(df[["Module", "Question", "Expected", "Agent_Output", "ExactMatch", "Jaccard"]].to_string(index=False))
+def _print_summary(df: pd.DataFrame, module_name: str, use_llm_judge: bool = False):
+    cols = ["Module", "Question", "Expected", "Agent_Output", "ExactMatch"]
+    if use_llm_judge:
+        cols += ["LLMJudge", "LLMJudgeReason", "FinalScore"]
+    cols += ["Jaccard"]
+    print(df[cols].to_string(index=False))
     print(f"\nExact Match Accuracy : {df['ExactMatch'].mean():.1%}")
+    if use_llm_judge:
+        print(f"Final Score (+ judge): {df['FinalScore'].mean():.1%}")
     print(f"Avg Jaccard Score    : {df['Jaccard'].mean():.3f}")
 
 

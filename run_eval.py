@@ -25,7 +25,11 @@ Available modules:
 """
 
 import argparse
+import os
+from dotenv import load_dotenv
 from evals.geneturing_eval import run_eval, run_benchmark, AVAILABLE_MODULES
+
+load_dotenv()
 
 
 def parse_args():
@@ -43,6 +47,8 @@ def parse_args():
                         help="Path to local GeneTuring JSON/CSV file (optional)")
     parser.add_argument("--output", type=str, default=None,
                         help="Save results to CSV (e.g. results.csv)")
+    parser.add_argument("--llm-judge", action="store_true",
+                        help="Use LLM as judge fallback when exact match fails")
     return parser.parse_args()
 
 
@@ -58,14 +64,28 @@ if __name__ == "__main__":
         print("Building basic genomic agent...\n")
         app = build_genomic_agent()
 
+    use_llm_judge = args.llm_judge
+    judge_llm = None
+    if use_llm_judge:
+        from langchain_anthropic import ChatAnthropic
+        judge_llm = ChatAnthropic(
+            model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            max_tokens=256,
+        )
+        print("LLM judge enabled — will score failed exact-match answers semantically.\n")
+
     if args.benchmark:
-        results_df = run_benchmark(app, sample_per_module=args.sample, path=args.path)
+        results_df = run_benchmark(app, sample_per_module=args.sample, path=args.path,
+                                   use_llm_judge=use_llm_judge, judge_llm=judge_llm)
     else:
         results_df = run_eval(
             app=app,
             module_name=args.module,
             sample_size=args.sample,
             path=args.path,
+            use_llm_judge=use_llm_judge,
+            judge_llm=judge_llm,
         )
 
     if args.output:
