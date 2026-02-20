@@ -22,7 +22,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run genomic agent eval on GeneTuring")
     parser.add_argument("--agent", type=str, default="react",
                         choices=["basic", "react"],
-                        help="Agent type: 'basic' or 'react' (default: react)")
+                        help="Agent type: 'basic' or 'react' (default: react — recommended)")
     parser.add_argument("--module", type=str, default="Gene alias",
                         help="GeneTuring module name (default: 'Gene alias')")
     parser.add_argument("--sample", type=int, default=5,
