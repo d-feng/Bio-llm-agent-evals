@@ -11,7 +11,7 @@ from langchain_anthropic import ChatAnthropic
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from tools.ncbi_gene_tool import search_ncbi_gene
+from tools.ncbi_gene_tool import search_ncbi_gene, search_ncbi_snp
 
 load_dotenv()
 
@@ -24,7 +24,7 @@ def build_genomic_agent():
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
     )
 
-    tools = [search_ncbi_gene]
+    tools = [search_ncbi_gene, search_ncbi_snp]
     llm_with_tools = llm.bind_tools(tools)
 
     def agent_node(state: MessagesState):
