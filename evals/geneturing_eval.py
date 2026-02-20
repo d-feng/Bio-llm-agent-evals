@@ -2,9 +2,10 @@
 evals/geneturing_eval.py
 ------------------------
 Evaluation loop that runs a LangGraph genomic agent against GeneTuring tasks
-and scores its answers using exact-match (and optionally Jaccard Index).
+and scores its answers using exact-match and Jaccard Index.
 
 GeneTuring repo: https://github.com/Winnie09/GeneTuring
+Covers 8 of the 16 GeneTuring modules in the built-in mock dataset.
 """
 
 import json
@@ -35,6 +36,56 @@ def jaccard_score(prediction: str, gold: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Built-in mock dataset (8 GeneTuring modules)
+# ---------------------------------------------------------------------------
+
+MOCK_DATA = [
+    # --- Gene alias ---
+    {"module": "Gene alias",        "question": "What is the official gene symbol of HER2?",                              "gold_standard": "ERBB2"},
+    {"module": "Gene alias",        "question": "What is the official gene symbol of p53?",                               "gold_standard": "TP53"},
+    {"module": "Gene alias",        "question": "What is the official gene symbol of VEGF?",                              "gold_standard": "VEGFA"},
+    {"module": "Gene alias",        "question": "What is the official gene symbol of PD-L1?",                             "gold_standard": "CD274"},
+    {"module": "Gene alias",        "question": "What is the official gene symbol of c-MET?",                             "gold_standard": "MET"},
+
+    # --- SNP location ---
+    {"module": "SNP location",      "question": "What chromosome is rs1229984 located on?",                               "gold_standard": "Chromosome 4"},
+    {"module": "SNP location",      "question": "What chromosome is rs334 located on?",                                   "gold_standard": "Chromosome 11"},
+    {"module": "SNP location",      "question": "What chromosome is rs7412 located on?",                                  "gold_standard": "Chromosome 19"},
+    {"module": "SNP location",      "question": "What chromosome is rs429358 located on?",                                "gold_standard": "Chromosome 19"},
+
+    # --- Gene location ---
+    {"module": "Gene location",     "question": "What chromosome is BRCA1 located on?",                                   "gold_standard": "Chromosome 17"},
+    {"module": "Gene location",     "question": "What chromosome is EGFR located on?",                                    "gold_standard": "Chromosome 7"},
+    {"module": "Gene location",     "question": "What chromosome is KRAS located on?",                                    "gold_standard": "Chromosome 12"},
+    {"module": "Gene location",     "question": "What chromosome is PTEN located on?",                                    "gold_standard": "Chromosome 10"},
+
+    # --- Gene disease association ---
+    {"module": "Gene disease",      "question": "Which gene is most associated with cystic fibrosis?",                    "gold_standard": "CFTR"},
+    {"module": "Gene disease",      "question": "Which gene is most associated with Huntington's disease?",               "gold_standard": "HTT"},
+    {"module": "Gene disease",      "question": "Which gene is mutated in sickle cell disease?",                          "gold_standard": "HBB"},
+
+    # --- Gene function ---
+    {"module": "Gene function",     "question": "What is the primary function of the TP53 gene?",                         "gold_standard": "tumor suppressor"},
+    {"module": "Gene function",     "question": "What type of protein does BRCA1 encode?",                                "gold_standard": "DNA repair"},
+    {"module": "Gene function",     "question": "What is the function of the VEGFA gene?",                                "gold_standard": "angiogenesis"},
+
+    # --- Chromosome gene count ---
+    {"module": "Chromosome gene count", "question": "Which chromosome has the most protein-coding genes?",                "gold_standard": "Chromosome 1"},
+    {"module": "Chromosome gene count", "question": "Which human chromosome is the smallest?",                            "gold_standard": "Chromosome 21"},
+
+    # --- Human genome reference ---
+    {"module": "Human genome",      "question": "How many chromosomes does a normal human cell have?",                    "gold_standard": "46"},
+    {"module": "Human genome",      "question": "What is the approximate number of protein-coding genes in the human genome?", "gold_standard": "20000"},
+
+    # --- Multi-species homolog ---
+    {"module": "Multi-species",     "question": "What is the mouse homolog of the human EGFR gene?",                      "gold_standard": "Egfr"},
+    {"module": "Multi-species",     "question": "What is the zebrafish homolog of the human TP53 gene?",                  "gold_standard": "tp53"},
+]
+
+AVAILABLE_MODULES = sorted(set(d["module"] for d in MOCK_DATA))
+
+
+# ---------------------------------------------------------------------------
 # Data loader
 # ---------------------------------------------------------------------------
 
@@ -47,8 +98,7 @@ def load_geneturing_tasks(
     Load GeneTuring Q&A tasks.
 
     If `path` points to a local JSON/CSV file exported from the GeneTuring repo,
-    it will be loaded directly. Otherwise falls back to a built-in mock subset
-    for quick testing without downloading the full dataset.
+    it will be loaded directly. Otherwise falls back to the built-in mock dataset.
 
     GeneTuring JSON schema: [{"module": str, "question": str, "gold_standard": str}]
     """
@@ -62,51 +112,42 @@ def load_geneturing_tasks(
         else:
             raise ValueError("Unsupported file format. Use .json or .csv")
     else:
-        # Built-in mock subset covering Gene alias and SNP location modules
-        mock_data = [
-            {"module": "Gene alias", "question": "What is the official gene symbol of HER2?",      "gold_standard": "ERBB2"},
-            {"module": "Gene alias", "question": "What is the official gene symbol of p53?",       "gold_standard": "TP53"},
-            {"module": "Gene alias", "question": "What is the official gene symbol of VEGF?",      "gold_standard": "VEGFA"},
-            {"module": "Gene alias", "question": "What is the official gene symbol of PD-L1?",     "gold_standard": "CD274"},
-            {"module": "Gene alias", "question": "What is the official gene symbol of c-MET?",     "gold_standard": "MET"},
-            {"module": "SNP location", "question": "What chromosome is rs1229984 located on?",     "gold_standard": "Chromosome 4"},
-            {"module": "SNP location", "question": "What chromosome is rs334 located on?",         "gold_standard": "Chromosome 11"},
-        ]
-        df = pd.DataFrame(mock_data)
+        df = pd.DataFrame(MOCK_DATA)
+
+    if module_name == "all":
+        return df.head(sample_size).to_dict("records")
 
     subset = df[df["module"] == module_name].head(sample_size)
+    if subset.empty:
+        available = ", ".join(f'"{m}"' for m in AVAILABLE_MODULES)
+        raise ValueError(f"Module '{module_name}' not found. Available: {available}")
+
     return subset.to_dict("records")
 
 
 # ---------------------------------------------------------------------------
-# Evaluation loop
+# Single-module evaluation loop
 # ---------------------------------------------------------------------------
 
 def run_eval(app, module_name: str = "Gene alias", sample_size: int = 5, path: str = None) -> pd.DataFrame:
     """
-    Run the compiled LangGraph agent against GeneTuring tasks and return a
-    scored results DataFrame.
-
-    Parameters
-    ----------
-    app         : compiled LangGraph app (from agents/genomic_agent.py)
-    module_name : GeneTuring module to evaluate (e.g. "Gene alias", "SNP location")
-    sample_size : number of tasks to evaluate
-    path        : optional path to a local GeneTuring JSON/CSV file
+    Run the compiled LangGraph agent against GeneTuring tasks and return a scored DataFrame.
+    Use module_name='all' to run across all built-in modules.
     """
     tasks = load_geneturing_tasks(path=path, module_name=module_name, sample_size=sample_size)
-    print(f"Evaluating agent on {len(tasks)} GeneTuring [{module_name}] tasks...\n")
+    label = "ALL modules" if module_name == "all" else f"[{module_name}]"
+    print(f"Evaluating agent on {len(tasks)} GeneTuring {label} tasks...\n")
 
     results = []
     for task in tasks:
-        question     = task["question"]
+        question      = task["question"]
         gold_standard = task["gold_standard"]
 
         output_state = app.invoke({"messages": [HumanMessage(content=question)]})
         agent_answer = output_state["messages"][-1].content
 
         results.append({
-            "Module":       module_name,
+            "Module":       task["module"],
             "Question":     question,
             "Expected":     gold_standard,
             "Agent_Output": agent_answer,
@@ -115,12 +156,66 @@ def run_eval(app, module_name: str = "Gene alias", sample_size: int = 5, path: s
         })
 
     df = pd.DataFrame(results)
+    _print_summary(df, module_name)
+    return df
 
-    # Summary
-    accuracy = df["ExactMatch"].mean()
-    avg_jaccard = df["Jaccard"].mean()
-    print(df[["Question", "Expected", "Agent_Output", "ExactMatch", "Jaccard"]].to_string(index=False))
-    print(f"\nExact Match Accuracy : {accuracy:.1%}")
-    print(f"Avg Jaccard Score    : {avg_jaccard:.3f}")
+
+# ---------------------------------------------------------------------------
+# All-modules benchmark
+# ---------------------------------------------------------------------------
+
+def run_benchmark(app, sample_per_module: int = 3, path: str = None) -> pd.DataFrame:
+    """
+    Run the agent across all available GeneTuring modules and print a
+    per-module accuracy table plus an overall score.
+    """
+    df_all = pd.DataFrame(MOCK_DATA) if not path else _load_external(path)
+    all_results = []
+
+    for module in AVAILABLE_MODULES:
+        subset = df_all[df_all["module"] == module].head(sample_per_module).to_dict("records")
+        if not subset:
+            continue
+        print(f"\n-- {module} ({len(subset)} tasks) --")
+        for task in subset:
+            output_state = app.invoke({"messages": [HumanMessage(content=task["question"])]})
+            agent_answer = output_state["messages"][-1].content
+            all_results.append({
+                "Module":       module,
+                "Question":     task["question"],
+                "Expected":     task["gold_standard"],
+                "Agent_Output": agent_answer,
+                "ExactMatch":   exact_match(agent_answer, task["gold_standard"]),
+                "Jaccard":      round(jaccard_score(agent_answer, task["gold_standard"]), 3),
+            })
+            status = "PASS" if all_results[-1]["ExactMatch"] else "FAIL"
+            print(f"  [{status}] {task['question'][:60]:<60} -> {task['gold_standard']}")
+
+    df = pd.DataFrame(all_results)
+    print("\n" + "-" * 60)
+    print("BENCHMARK SUMMARY")
+    print("-" * 60)
+
+    summary = df.groupby("Module").agg(
+        Tasks=("ExactMatch", "count"),
+        ExactMatch=("ExactMatch", "mean"),
+        AvgJaccard=("Jaccard", "mean"),
+    ).round(3)
+    summary["ExactMatch"] = summary["ExactMatch"].map(lambda x: f"{x:.1%}")
+    print(summary.to_string())
+    print(f"\nOverall Exact Match: {df['ExactMatch'].mean():.1%}  ({df['ExactMatch'].sum():.0f}/{len(df)} correct)")
 
     return df
+
+
+def _print_summary(df: pd.DataFrame, module_name: str):
+    print(df[["Module", "Question", "Expected", "Agent_Output", "ExactMatch", "Jaccard"]].to_string(index=False))
+    print(f"\nExact Match Accuracy : {df['ExactMatch'].mean():.1%}")
+    print(f"Avg Jaccard Score    : {df['Jaccard'].mean():.3f}")
+
+
+def _load_external(path: str) -> pd.DataFrame:
+    if path.endswith(".json"):
+        with open(path, encoding="utf-8") as f:
+            return pd.DataFrame(json.load(f))
+    return pd.read_csv(path)
