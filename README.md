@@ -6,6 +6,53 @@ When architecting autonomous AI systems for drug discovery, having evaluations t
 
 ---
 
+## Eval Scripts
+
+Ready-to-run evaluation scripts using LangGraph + Claude against GeneTuring.
+
+### Project layout
+
+```
+Bio-llm-agent-evals/
+├── tools/
+│   └── ncbi_gene_tool.py       # LangChain @tool for NCBI E-utilities (ESearch + ESummary)
+├── agents/
+│   └── genomic_agent.py        # LangGraph agent: agent → tool call → agent cycle
+├── evals/
+│   └── geneturing_eval.py      # Data loader + scoring (exact match, Jaccard Index)
+├── run_eval.py                  # CLI entrypoint
+└── requirements.txt
+```
+
+### Quick start
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env             # add your ANTHROPIC_API_KEY
+
+# Run with built-in mock tasks (no download needed)
+python run_eval.py
+
+# Run a different GeneTuring module
+python run_eval.py --module "SNP location" --sample 10
+
+# Load a local GeneTuring dataset and save results
+python run_eval.py --path data/geneturing.json --output results.csv
+```
+
+### Scoring
+
+| Metric | Use case |
+|---|---|
+| Exact match | Single-answer questions (e.g. official gene symbol) |
+| Jaccard Index | Multi-gene alias questions where partial credit applies |
+
+---
+
+## Benchmark Resources
+
+---
+
 ## Agentic & Workflow-Driven Benchmarks
 
 Benchmarks that evaluate autonomous agents — tool use, API calls, code execution, and multi-step reasoning.
