@@ -15,11 +15,15 @@ Ready-to-run evaluation scripts using LangGraph + Claude against GeneTuring.
 ```
 Bio-llm-agent-evals/
 ├── tools/
-│   └── ncbi_gene_tool.py       # LangChain @tool for NCBI E-utilities (ESearch + ESummary)
+│   └── ncbi_gene_tool.py       # LangChain tools: NCBI Gene, NCBI dbSNP, Ensembl REST API
 ├── agents/
-│   └── genomic_agent.py        # LangGraph agent: agent → tool call → agent cycle
+│   ├── genomic_agent.py        # Basic LangGraph agent
+│   └── react_genomic_agent.py  # ReAct agent with question classifier (recommended)
 ├── evals/
-│   └── geneturing_eval.py      # Data loader + scoring (exact match, Jaccard Index)
+│   ├── geneturing_eval.py      # Data loader + scoring (exact match, Jaccard, LLM judge)
+│   └── report.py               # Markdown and Word report generation
+├── data/
+│   └── Q_A_dataset.csv         # Official GeneTuring dataset (1,600 questions, 16 modules)
 ├── run_eval.py                  # CLI entrypoint
 └── requirements.txt
 ```
@@ -30,14 +34,19 @@ Bio-llm-agent-evals/
 pip install -r requirements.txt
 cp .env.example .env             # add your ANTHROPIC_API_KEY
 
-# Run with built-in mock tasks (no download needed)
+# Single module (Gene alias, 5 questions)
 python run_eval.py
 
-# Run a different GeneTuring module
+# Run a specific module
 python run_eval.py --module "SNP location" --sample 10
 
-# Load a local GeneTuring dataset and save results
-python run_eval.py --path data/geneturing.json --output results.csv
+# Full benchmark across all 16 modules with LLM judge + report
+python run_eval.py --benchmark --llm-judge --report report.md
+
+# Select specific modules (100-question run across 10 modules)
+python run_eval.py --benchmark --sample 10 --llm-judge \
+  --modules "Gene alias,SNP location,Gene location,Gene disease association,Gene SNP association,Gene name conversion,Gene name extraction,Gene ontology,Protein-coding genes,TF regulation" \
+  --report report_100.md --output results_100.csv
 ```
 
 ### Scoring
@@ -46,6 +55,53 @@ python run_eval.py --path data/geneturing.json --output results.csv
 |---|---|
 | Exact match | Single-answer questions (e.g. official gene symbol) |
 | Jaccard Index | Multi-gene alias questions where partial credit applies |
+| LLM judge | Fallback for format mismatches and verbose answers (e.g. "Chromosome 8" vs "chr8") |
+
+### Benchmark results (100 questions, ReAct agent + LLM judge)
+
+| Module | Exact Match | Final Score |
+|---|---|---|
+| Gene alias | 100% | 100% |
+| Gene SNP association | 100% | 100% |
+| Gene name conversion | 100% | 100% |
+| SNP location | 0%* | 100% |
+| Gene name extraction | 40% | 90% |
+| Protein-coding genes | 0%* | 80% |
+| Gene disease association | 50% | 60% |
+| Gene location | 0%* | 60% |
+| TF regulation | 30% | 50% |
+| Gene ontology | 0% | 40% |
+| **Overall** | **42%** | **78%** |
+
+*Low exact match due to format mismatch — agent returns "Chromosome 8", dataset expects "chr8". LLM judge resolves these correctly.
+
+### Known limitations
+
+**GeneTuring Gene location module — unresolvable identifiers**
+
+Four identifier types in the dataset cannot be resolved via any public REST API:
+
+| Identifier | Type | Expected | Issue |
+|---|---|---|---|
+| `LA16c-329F2.2` | BAC clone (LLNL library) | chr16 | Not indexed in NCBI Gene or Ensembl |
+| `RP11-17A4.3` | BAC clone (RPCI-11 library) | chr8 | Not indexed in NCBI Gene or Ensembl |
+| `ENSG10010137169.1` | Non-standard Ensembl ID | chr4 | Invalid/retired ID — not found in GRCh37 or GRCh38 |
+| `AC018712.2` | GenBank contig accession | chr2 | Sequence accession, not a gene record |
+
+These were resolvable via older UCSC Genome Browser tracks or legacy genome assembly databases that no longer have public REST endpoints. The agent's Gene location score is capped at ~60% on this module due to these dataset-level limitations, not agent reasoning errors.
+
+**Modules requiring specialized tools (excluded from standard benchmark)**
+
+The following 6 GeneTuring modules require tools beyond NCBI/Ensembl APIs and are excluded from the default benchmark run:
+
+| Module | Requirement |
+|---|---|
+| Amino acid translation | Codon translation tool (long nucleotide sequences) |
+| DNA sequence extraction | NCBI sequence fetch by genomic coordinates |
+| Human genome DNA alignment | BLAST against GRCh38 |
+| Human genome DNA alignment programming | BLAST + code execution |
+| Multi-species DNA alignment | Cross-species BLAST |
+| Multi-species DNA alignment programming | Cross-species BLAST + code execution |
 
 ---
 
