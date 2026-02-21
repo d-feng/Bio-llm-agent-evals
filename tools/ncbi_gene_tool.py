@@ -73,6 +73,83 @@ def search_ncbi_gene(query: str, max_results: int = 3) -> str:
 
 
 @tool
+def search_ensembl_gene(identifier: str) -> str:
+    """
+    Queries the Ensembl REST API to look up gene metadata by Ensembl gene ID,
+    gene symbol, BAC clone name, or GenBank accession.
+    Input:  An Ensembl ID (e.g. 'ENSG00000141510'), gene symbol, or other identifier.
+    Output: A JSON-formatted string with gene name, chromosome, start/end position,
+            biotype, and description.
+    """
+    ENSEMBL_BASE = "https://rest.ensembl.org"
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+
+    # Clean up the identifier
+    ident = identifier.strip()
+
+    try:
+        # Route 1: Ensembl stable ID (ENSG...)
+        if ident.upper().startswith("ENSG"):
+            url = f"{ENSEMBL_BASE}/lookup/id/{ident}"
+            resp = requests.get(url, headers=headers, params={"expand": 0})
+            resp.raise_for_status()
+            data = resp.json()
+            return json.dumps({
+                "Identifier": ident,
+                "Name": data.get("display_name"),
+                "Chromosome": f"chr{data.get('seq_region_name')}",
+                "Start": data.get("start"),
+                "End": data.get("end"),
+                "Strand": data.get("strand"),
+                "Biotype": data.get("biotype"),
+                "Description": data.get("description"),
+            }, indent=2)
+
+        # Route 2: Symbol or alias lookup (human, GRCh38)
+        url = f"{ENSEMBL_BASE}/lookup/symbol/homo_sapiens/{ident}"
+        resp = requests.get(url, headers=headers, params={"expand": 0})
+        if resp.status_code == 200:
+            data = resp.json()
+            return json.dumps({
+                "Identifier": ident,
+                "EnsemblID": data.get("id"),
+                "Name": data.get("display_name"),
+                "Chromosome": f"chr{data.get('seq_region_name')}",
+                "Start": data.get("start"),
+                "End": data.get("end"),
+                "Biotype": data.get("biotype"),
+                "Description": data.get("description"),
+            }, indent=2)
+
+        # Route 3: Sequence region / accession search via xrefs
+        url = f"{ENSEMBL_BASE}/xrefs/symbol/homo_sapiens/{ident}"
+        resp = requests.get(url, headers=headers)
+        if resp.status_code == 200 and resp.json():
+            hits = resp.json()
+            ensembl_id = hits[0].get("id")
+            if ensembl_id:
+                url2 = f"{ENSEMBL_BASE}/lookup/id/{ensembl_id}"
+                resp2 = requests.get(url2, headers=headers, params={"expand": 0})
+                resp2.raise_for_status()
+                data = resp2.json()
+                return json.dumps({
+                    "Identifier": ident,
+                    "EnsemblID": ensembl_id,
+                    "Name": data.get("display_name"),
+                    "Chromosome": f"chr{data.get('seq_region_name')}",
+                    "Start": data.get("start"),
+                    "End": data.get("end"),
+                    "Biotype": data.get("biotype"),
+                    "Description": data.get("description"),
+                }, indent=2)
+
+        return f"No Ensembl record found for identifier: {ident}"
+
+    except requests.exceptions.RequestException as e:
+        return f"Ensembl API Error: {str(e)}"
+
+
+@tool
 def search_ncbi_snp(rsid: str) -> str:
     """
     Queries the NCBI dbSNP database to retrieve chromosome location and allele
