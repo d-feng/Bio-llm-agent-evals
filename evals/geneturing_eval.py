@@ -5,7 +5,8 @@ Evaluation loop that runs a LangGraph genomic agent against GeneTuring tasks
 and scores its answers using exact-match and Jaccard Index.
 
 GeneTuring repo: https://github.com/Winnie09/GeneTuring
-Covers 8 of the 16 GeneTuring modules in the built-in mock dataset.
+Uses the official Q&A dataset (data/Q_A_dataset.csv, 1600 questions across 16
+modules) when available; falls back to the built-in 25-question mock dataset.
 """
 
 import os
@@ -17,22 +18,30 @@ from langchain_core.messages import HumanMessage
 
 load_dotenv()
 
+# Path to the official GeneTuring CSV (downloaded from the GeneTuring repo)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DATA_PATH = os.path.join(_HERE, "..", "data", "Q_A_dataset.csv")
+
 
 # ---------------------------------------------------------------------------
 # Scoring helpers
 # ---------------------------------------------------------------------------
 
-def exact_match(prediction: str, gold: str) -> bool:
-    return gold.strip().lower() in prediction.strip().lower()
+def exact_match(prediction: str, gold) -> bool:
+    if gold is None or (isinstance(gold, float) and gold != gold):  # NaN check
+        return False
+    return str(gold).strip().lower() in str(prediction).strip().lower()
 
 
-def jaccard_score(prediction: str, gold: str) -> float:
+def jaccard_score(prediction: str, gold) -> float:
     """
     Jaccard Index over token sets — used for multi-gene alias questions
     where the answer may contain several gene names.
     """
-    pred_tokens = set(prediction.lower().split())
-    gold_tokens = set(gold.lower().split())
+    if gold is None or (isinstance(gold, float) and gold != gold):  # NaN check
+        return 0.0
+    pred_tokens = set(str(prediction).lower().split())
+    gold_tokens = set(str(gold).lower().split())
     if not pred_tokens and not gold_tokens:
         return 1.0
     intersection = pred_tokens & gold_tokens
@@ -161,7 +170,7 @@ MOCK_DATA = [
     {"module": "Multi-species",     "question": "What is the zebrafish homolog of the human TP53 gene?",                  "gold_standard": "tp53"},
 ]
 
-AVAILABLE_MODULES = sorted(set(d["module"] for d in MOCK_DATA))
+AVAILABLE_MODULES = sorted(set(d["module"] for d in MOCK_DATA))  # mock fallback list; real list loaded dynamically
 
 
 # ---------------------------------------------------------------------------
@@ -176,29 +185,23 @@ def load_geneturing_tasks(
     """
     Load GeneTuring Q&A tasks.
 
-    If `path` points to a local JSON/CSV file exported from the GeneTuring repo,
-    it will be loaded directly. Otherwise falls back to the built-in mock dataset.
+    If `path` points to a local JSON/CSV file it will be loaded directly.
+    Otherwise uses the official GeneTuring CSV (data/Q_A_dataset.csv) if present,
+    falling back to the built-in 25-question mock dataset.
 
     GeneTuring JSON schema: [{"module": str, "question": str, "gold_standard": str}]
     """
     if path:
-        if path.endswith(".json"):
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-            df = pd.DataFrame(data)
-        elif path.endswith(".csv"):
-            df = pd.read_csv(path)
-        else:
-            raise ValueError("Unsupported file format. Use .json or .csv")
+        df = _load_external(path)
     else:
-        df = pd.DataFrame(MOCK_DATA)
+        df = _default_df()
 
     if module_name == "all":
         return df.head(sample_size).to_dict("records")
 
     subset = df[df["module"] == module_name].head(sample_size)
     if subset.empty:
-        available = ", ".join(f'"{m}"' for m in AVAILABLE_MODULES)
+        available = ", ".join(f'"{m}"' for m in sorted(df["module"].unique()))
         raise ValueError(f"Module '{module_name}' not found. Available: {available}")
 
     return subset.to_dict("records")
@@ -252,15 +255,21 @@ def run_eval(app, module_name: str = "Gene alias", sample_size: int = 5,
 # ---------------------------------------------------------------------------
 
 def run_benchmark(app, sample_per_module: int = 3, path: str = None,
-                  use_llm_judge: bool = False, judge_llm=None) -> pd.DataFrame:
+                  use_llm_judge: bool = False, judge_llm=None,
+                  modules: list = None) -> pd.DataFrame:
     """
     Run the agent across all available GeneTuring modules and print a
     per-module accuracy table plus an overall score.
+
+    modules: optional list of module names to restrict the run (default = all).
     """
-    df_all = pd.DataFrame(MOCK_DATA) if not path else _load_external(path)
+    df_all = _load_external(path) if path else _default_df()
+    available_modules = sorted(df_all["module"].unique())
+    if modules:
+        available_modules = [m for m in available_modules if m in modules]
     all_results = []
 
-    for module in AVAILABLE_MODULES:
+    for module in available_modules:
         subset = df_all[df_all["module"] == module].head(sample_per_module).to_dict("records")
         if not subset:
             continue
@@ -318,7 +327,20 @@ def _print_summary(df: pd.DataFrame, module_name: str, use_llm_judge: bool = Fal
 
 
 def _load_external(path: str) -> pd.DataFrame:
+    """Load CSV or JSON and normalize column names to lowercase snake_case."""
     if path.endswith(".json"):
         with open(path, encoding="utf-8") as f:
-            return pd.DataFrame(json.load(f))
-    return pd.read_csv(path)
+            df = pd.DataFrame(json.load(f))
+    else:
+        df = pd.read_csv(path)
+    # Normalize GeneTuring CSV column names: Module/Question/Goldstandard -> module/question/gold_standard
+    rename = {"Module": "module", "Question": "question", "Goldstandard": "gold_standard"}
+    df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
+    return df
+
+
+def _default_df() -> pd.DataFrame:
+    """Return the official GeneTuring CSV if present, else the built-in mock data."""
+    if os.path.exists(DEFAULT_DATA_PATH):
+        return _load_external(DEFAULT_DATA_PATH)
+    return pd.DataFrame(MOCK_DATA)

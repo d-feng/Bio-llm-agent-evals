@@ -45,6 +45,8 @@ def parse_args():
                         help="Number of tasks per module (default: 5)")
     parser.add_argument("--benchmark", action="store_true",
                         help="Run full benchmark across all modules")
+    parser.add_argument("--modules", type=str, default=None,
+                        help="Comma-separated list of module names to include in benchmark")
     parser.add_argument("--path", type=str, default=None,
                         help="Path to local GeneTuring JSON/CSV file (optional)")
     parser.add_argument("--output", type=str, default=None,
@@ -82,8 +84,10 @@ if __name__ == "__main__":
         print("LLM judge enabled — will score failed exact-match answers semantically.\n")
 
     if args.benchmark:
+        selected_modules = [m.strip() for m in args.modules.split(",")] if args.modules else None
         results_df = run_benchmark(app, sample_per_module=args.sample, path=args.path,
-                                   use_llm_judge=use_llm_judge, judge_llm=judge_llm)
+                                   use_llm_judge=use_llm_judge, judge_llm=judge_llm,
+                                   modules=selected_modules)
     else:
         results_df = run_eval(
             app=app,
